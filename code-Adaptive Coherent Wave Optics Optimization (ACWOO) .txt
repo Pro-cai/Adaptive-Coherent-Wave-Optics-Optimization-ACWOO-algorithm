@@ -1,0 +1,268 @@
+function [BestF,BestX,HisBestFit] = ACWOO(nPop,MaxIt,Low,Up,Dim,fobj)
+
+%% ========== Constants (Manuscript Sec. 2.4.3) ==========
+Lambda = 5*10^-4;   % wavelength (mm)
+d      = 1*10^-2;   % slit width (mm)
+I0     = 1;         % initial relative intensity
+
+%% ========== Initialization ==========
+k = 0; Time_0 = 0; Time_p = 0;
+m_l = 0; m_d = 0;
+BestF = inf; BestX = [];
+m_r_all = zeros(1, nPop);
+
+for i = 1:nPop
+    S(i,:) = rand(1,Dim).*(Up-Low)+Low;                       % Eq.(13)
+    us = max(S(i,:)); ls = min(S(i,:));
+    if i == 1
+        sintheta = 0;                                         % Eq.(14)
+        m_r_all(i) = 1;
+        US(i,:) = S(i,:)+d*(rand*(us-ls)+ls);                 % Eq.(16)
+        LS(i,:) = S(i,:)-d*(rand*(us-ls)+ls);                 % Eq.(17)
+    else
+        if mod(i,2)==0
+            m_d = m_d+1;
+            sintheta = (2*m_d)*Lambda/(2*d);                  % Eq.(14)
+            m_r_all(i) = m_d;
+        else
+            m_l = m_l+1;
+            sintheta = (2*m_l+1)*Lambda/(2*d);                % Eq.(14)
+            m_r_all(i) = m_l;
+        end
+        US(i,:) = S(i,:)+d*(rand*(us-ls)+ls)/sintheta;        % Eq.(16)
+        LS(i,:) = S(i,:)-d*(rand*(us-ls)+ls)/sintheta;        % Eq.(17)
+    end
+    deltaS(i) = d*sintheta;                                   % Eq.(15)
+    PopPos(i,:) = (US(i,:)+LS(i,:))/2 + sign(rand-0.5)*rand*deltaS(i);  % Eq.(18)
+    PopPos(i,:) = SpaceBound(PopPos(i,:),Up,Low);
+    PopFit(i)   = fobj(PopPos(i,:));
+    if PopFit(i) <= BestF
+        BestF = PopFit(i); BestX = PopPos(i,:);
+    end
+    Ua_deltaF(i) = 1; Ua_deltaS(i) = 1;
+    Ua_deltaX(i) = sqrt(mean((PopPos(i,:)-BestX).^2));
+end
+
+[~,index] = sort(PopFit);
+PopPos = PopPos(index,:); PopFit = PopFit(index);
+m_r_all = m_r_all(index); Ua_deltaX = Ua_deltaX(index);
+HisBestFit = zeros(MaxIt,1);
+
+%% ========== Parameters ==========
+Ua = (Lambda/(4*pi))*(3*nPop/d);
+MaDim0 = round(3/Ua*Dim/log(Dim));
+Ua_s = ones(1,nPop)*Ua;
+Ua_w = ones(1,nPop)*cos(pi/2*Ua);
+t0 = round(0.5*Ua*nPop); t = t0;                              % Eq.(19)
+T = abs(round((1-sin(pi/2*Ua))*nPop));
+Mid(1) = T+1; Mid(1) = SpaceMid(Mid(1),nPop);
+fes = zeros(nPop,MaxIt+1);
+sim = round(nPop/2);
+
+%% ========== Main loop ==========
+for It = 1:MaxIt
+    C = 1 - It/MaxIt;
+    tau1 = I0*(Ua/3*(C-1)+1);
+    tau2 = exp(tau1)/3;                                       % [WOO] Sec.2.4.6
+    gamma = exp(-C^2);                                        % [ACWOO] coherence factor
+
+    bc = round(nPop/3*(1+C*2));                               % Eq.(24)
+    MaDim = round((1+C)*MaDim0/2);
+    Ma_b = zeros(4,MaDim);
+    m_l = 0; m_d = 0; Time_1 = 0;
+
+    for i = 1:nPop
+        pw = sin((-exp(-It)+1)*pi/2);
+        Mid(2) = round(nPop - 1/(2*Ua^2)*C*T);
+        Mid(2) = SpaceMid(Mid(2),nPop);
+        U = (PopPos(randi([min(Mid),max(Mid)]),:)-PopPos(i,:))*pw;
+
+        if rand > C
+            if i < 1/2*nPop
+                U2 = PopPos(randi([1,sim]),:)-PopPos(randi(nPop),:);
+            else
+                U2 = PopPos(randi([1,sim]),:)-PopPos(randi([sim+1,nPop]),:);
+            end
+        else
+            U2 = PopPos(randi(nPop),:)-PopPos(randi(nPop),:);
+        end
+
+        m_r = m_r_all(i);
+        mu  = 1 + m_r/max(1,round(nPop/2));                   % [ACWOO] Eq.(51)
+
+        if i == 1
+            I = I0*sin(pi/2*C^(2*(1+C)));
+        else
+            u = pi*deltaS(i)/Lambda;
+            I = I0*(sin(u)/u)^2;
+        end
+        Ir = exp(I*abs(BestF-PopFit(i))/(BestF+eps));         % Eq.(23)
+        if Ir == inf || isnan(Ir), Ir = 1; end
+
+        % ========== Random strategy ==========
+        if It < 1/t*MaxIt
+            flag_e1 = 0;
+            r1 = rand;
+            s = exp(-2*r1*(1-r1)) / mu;                       % Eq.(21) + [ACWOO] /mu
+            s = min(1,max(0,s));
+            Z1_rand = rand(1,Dim) < s;
+            om_rand = mu*((rand(1,Dim).*abs(randn(1,Dim))).^(C+3) + randn/m_r);  % Eq.(20) + [ACWOO] *mu
+            if bc > i
+                w = Ir*exp(-rand(1,Dim).^(C+1));              % Eq.(26)  exponent C+1
+                DU1_rand = w.*U + (1-w).*U2;                  % Eq.(25)  outer, w·U+(1-w)·U2
+            else
+                w = Ir*exp(-rand(1,Dim).^(C+1))/m_r;          % Eq.(26)
+                DU1_rand = ((1-w).*U + w.*(U2+BestX/m_r)).^2; % Eq.(25)  inner
+            end
+        else
+            flag_e1 = 1;
+            if rand > C
+                w  = max(Ua_w(i),0);
+                Po = round(3*(1-m_r/sim));
+                rP = randi(nPop,1);
+                s  = Ua_s(rP)^(Po*C) + Ua/4*randn*rand;       % Eq.(22)
+                s  = max(min(s,1),0);
+                Z1_rand = rand(1,Dim) <= s;
+                Z1_rand(randi(Dim)) = 1;
+            else
+                w  = Ir; Po = 3;
+                s  = Ua^(Po*C);
+                Z1_rand = rand(1,Dim) <= s;
+            end
+            if Time_p == 0
+                p = round(C^2*log(Dim)*T + 1/(w+eps) + Ua);   % Eq.(27)
+                p = min(max(p,1),nPop);
+                Leader_Pop = randi([1,p],1);
+            else
+                Leader_Pop = pb_m; Time_p = 0;
+            end
+            if rand > C
+                Su = exp(Ir-2*T*Lambda/d);                    % Eq.(28)
+                if fes(i,It)/MaxIt > rand && bc > i
+                    DU1_rand = U + Su*U2;
+                else
+                    DU1_rand = w*(PopPos(Leader_Pop,:) + Su*(U-PopPos(randi(nPop),:)));
+                end
+            else
+                U3 = tau1*(rand(1,Dim).*S(i,:)) + (1-tau1)*PopPos(Leader_Pop,:);
+                DU1_rand = (1-w)*U + w*Ua*(Ir*U2 + U3);
+            end
+            om_rand = mu;                                     % [ACWOO] *mu
+        end
+
+        % ========== Reinforcement strategy ==========
+        if rand > tau1
+            if rand > C
+                w = sqrt(2)*sqrt(abs(sin(It.*(rand-Ua)))) + 2*rand - 1;
+                SW = sin(rand*pi) + cos(rand*pi);
+                om2 = SW./(w+eps);
+                Vr = randn(1,Dim).*om2 * mu;                  % [ACWOO] *mu
+                newPos_reinf = Vr.*BestX;
+            else
+                Rt1 = randi(360,2)*pi/360;                    % Eq.(32)
+                om2 = cos(Rt1(1))*sin(Rt1(2))/i;
+                Vr = randn(1,Dim).*om2 / mu;                  % [ACWOO] /mu
+                newPos_reinf = Vr.*(BestX+PopPos(i,:))/2;
+            end
+        else
+            r1 = rand;
+            D = ((BestX+PopPos(i,:))/2 - PopPos(randi(nPop),:));
+            om3 = abs(randn)*(r1*(1-r1))/i * mu;              % [ACWOO] *mu
+            Z2 = rand > rand;
+            DX = Z2*om3*D;
+            om4 = exp(-randn/i)*rand;
+            newPos_reinf = PopPos(i,:) + om4.*U2 + DX;
+        end
+        DU1_reinf = newPos_reinf - PopPos(i,:);
+
+        % ========== Coherence fusion ==========
+        DU1_new = (1-gamma)*DU1_rand + gamma*DU1_reinf;       % [ACWOO]
+
+        newPopPos(i,:) = PopPos(i,:) + om_rand.*Z1_rand.*DU1_new;
+        newPopPos(i,:) = SpaceBound(newPopPos(i,:),Up,Low);
+        newPopFit(i) = fobj(newPopPos(i,:));
+
+        if newPopFit(i) < PopFit(i)
+            if flag_e1 == 0
+                Time_0 = Time_0+1;
+                if Time_0 > (3*C+3)*nPop && t > Ua*t0
+                    t = t-1; Time_0 = 0;
+                end
+            elseif flag_e1 == 1
+                Time_1 = Time_1+1;
+                Ua_deltaF(i) = abs((PopFit(i)-newPopFit(i))/(PopFit(i)-BestF+eps));  % Eq.(37)
+                Ua_deltaS(i) = sqrt(mean((PopPos(i,:)-newPopPos(i,:)).^2));
+                Ua_deltaX(i) = sqrt(mean((PopPos(i,:)-BestX).^2));
+                if Time_1 <= MaDim
+                    Ma_b(:,Time_1) = [i; Leader_Pop; s; w];
+                elseif newPopFit(i) < BestF && Time_1 <= 2*MaDim
+                    Ma_b(:,Time_1-MaDim) = [i; Leader_Pop; s; w];
+                end
+            end
+            S(i,:) = tau1*PopPos(i,:) + (1-tau1)*S(i,:);
+            S(i,:) = SpaceBound(S(i,:),Up,Low);
+            PopFit(i)   = newPopFit(i);
+            PopPos(i,:) = newPopPos(i,:);
+        end
+        if PopFit(i) < BestF
+            BestF = PopFit(i); BestX = PopPos(i,:);
+            fes(i,It+1) = 0;
+        else
+            fes(i,It+1) = fes(i,It) + 1;
+        end
+    end
+    HisBestFit(It) = BestF;
+
+    % ========== Adjustment strategy ==========
+    if Time_1 > 0
+        Ma_b(:,all(Ma_b==0,1)) = [];
+        Sa = min(Time_1, MaDim);
+        deltaF_Better = Ua_deltaF(Ma_b(1,:)); SumF_Better = sum(deltaF_Better);
+        deltaS_Better = Ua_deltaS(Ma_b(1,:)); SumS_Better = sum(deltaS_Better);
+        deltaX_Better = Ua_deltaX(Ma_b(1,:)); SumX_Better = sum(deltaX_Better);
+        om5 = Sa*(deltaF_Better/(SumF_Better+eps) + deltaX_Better/(SumX_Better+SumS_Better+eps));
+        om6 = log(mean(Ma_b(1,:))+eps)*pw;
+        L = om5/(om6+eps);
+        [~,Lminr] = sort(L); [~,Xminr] = sort(deltaX_Better);
+        Pool = [mean(Ma_b(3,:)), Ma_b(3,Lminr(1)), Ma_b(3,Xminr(1));
+                mean(Ma_b(4,:)), Ma_b(4,Lminr(1)), Ma_b(4,Xminr(1))];
+        if Sa <= sin(pi/2*Ua)*MaDim
+            rpool = 1; k = k(1)+1; if k > nPop, k = 1; end
+        else
+            rpool = randi(3); rL = randi(Sa);
+            k = Ma_b(1,Lminr(1:rL));
+        end
+        L1 = mean(L)*Pool(1,rpool);
+        L2 = mean(L)*Pool(2,rpool);
+        f = sign(rand^(Dim/10)-Ua);                           % Eq.(38)
+        if rand > C
+            if tau2 > rand                                     % Eq.(39) τ₂ condition
+                Ua_s(k) = tau1*L1 + (1-tau1)*Ua_s(k);
+            else
+                Ua_s(k) = exp(-sqrt((tau1*L1 + (1-tau1)*Ua_s(k)).^2)) * (It^f);
+                kpbest = Ma_b(2,randi(Sa));
+                Time_p = 1; pb_m = kpbest;
+            end
+            Ua_w(k) = sin(L1*pi/2);                            % Eq.(39)
+        else
+            Ua_s(k) = (L1^2)*(It^f);
+            Ua_w(k) = tau1*exp(-sqrt(abs(L2))) + (1-tau1)*Ua_w(k);
+        end
+    end
+
+    [~,index] = sort(PopFit);
+    PopPos = PopPos(index,:); PopFit = PopFit(index);
+    m_r_all = m_r_all(index);
+end
+end
+
+%% ========== Auxiliary functions ==========
+function X = SpaceBound(X,Up,Low)
+Dim = length(X);
+S = (X>Up)+(X<Low);
+X = (rand(1,Dim).*(Up-Low)+Low).*S + X.*(~S);
+end
+
+function Mid = SpaceMid(Mid,nPop)
+if Mid <= 0, Mid = 1; elseif Mid > nPop, Mid = nPop; end
+end
